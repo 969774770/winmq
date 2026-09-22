@@ -1,0 +1,20 @@
+# 编译产物
+*.exe
+*.exe~
+*.syso.tmp
+*~
+
+# 本地配置（含 accessKeySecret；首次运行会自动生成随机密钥）
+config.json
+
+# 运行数据与日志
+data/
+*.log
+
+# IDE
+.idea/
+.vscode/
+
+# 系统文件
+Thumbs.db
+Desktop.ini

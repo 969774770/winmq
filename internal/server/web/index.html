@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>winMQ 消息队列管理</title>
+<link rel="stylesheet" href="/web/style.css">
+</head>
+<body>
+
+<!-- 登录层 -->
+<div id="loginLayer" class="login-layer hidden">
+  <div class="login-box">
+    <div class="login-logo">winMQ</div>
+    <h1>消息队列管理控制台</h1>
+    <p class="login-tip">请输入访问密钥（config.json 中的 accessKeySecret）</p>
+    <input type="password" id="loginSecret" placeholder="accessKeySecret" autocomplete="off">
+    <button id="loginBtn">登 录</button>
+    <p id="loginErr" class="login-err"></p>
+  </div>
+</div>
+
+<!-- 主界面 -->
+<div id="mainLayer" class="hidden">
+  <header class="topbar">
+    <div class="brand">winMQ <span>消息队列</span></div>
+    <nav>
+      <a class="tab active" data-tab="console">控制台</a>
+      <a class="tab" data-tab="api">API 文档</a>
+    </nav>
+    <div class="top-right">
+      <span id="pausedBadge" class="badge paused hidden">已暂停</span>
+      <span id="connInfo" class="conn-info"></span>
+    </div>
+  </header>
+
+  <!-- 控制台：总览 + 队列管理 -->
+  <section id="tab-console" class="tab-page">
+    <div class="section-title">全局总览</div>
+    <div class="cards">
+      <div class="card"><div class="card-num" id="ovQueues">-</div><div class="card-label">队列数</div></div>
+      <div class="card"><div class="card-num" id="ovActive">-</div><div class="card-label">待消费消息</div></div>
+      <div class="card green"><div class="card-num" id="ovEnqRate">-</div><div class="card-label">入队速率 (条/秒)</div></div>
+      <div class="card green"><div class="card-num" id="ovDeqRate">-</div><div class="card-label">消费速率 (条/秒)</div></div>
+      <div class="card"><div class="card-num" id="ovEnqTotal">-</div><div class="card-label">累计入队</div></div>
+      <div class="card"><div class="card-num" id="ovDeqTotal">-</div><div class="card-label">累计消费</div></div>
+      <div class="card"><div class="card-num" id="ovDisk">-</div><div class="card-label">存储磁盘占用</div></div>
+      <div class="card"><div class="card-num" id="ovReq">-</div><div class="card-label">累计请求数</div></div>
+      <div class="card"><div class="card-num" id="ovTraffic">-</div><div class="card-label">累计流量(收/发)</div></div>
+    </div>
+
+    <div class="section-title">今日统计</div>
+    <div class="cards">
+      <div class="card blue"><div class="card-num" id="tdReq">-</div><div class="card-label">今日请求数</div></div>
+      <div class="card blue"><div class="card-num" id="tdEnq">-</div><div class="card-label">今日入队</div></div>
+      <div class="card blue"><div class="card-num" id="tdDeq">-</div><div class="card-label">今日消费</div></div>
+      <div class="card blue"><div class="card-num" id="tdTraffic">-</div><div class="card-label">今日流量(收/发)</div></div>
+    </div>
+
+    <div class="section-title">最近 7 天</div>
+    <div class="panel">
+      <div class="tbl-wrap">
+        <table class="tbl" id="dailyTable">
+          <thead>
+            <tr><th>日期</th><th>请求数</th><th>入队</th><th>消费</th><th>接收流量</th><th>发送流量</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="section-title">队列管理</div>
+    <div class="toolbar">
+      <button class="btn primary" id="btnCreateQueue">+ 创建队列</button>
+      <button class="btn" id="btnBenchTop">性能压测</button>
+      <span class="toolbar-tip">队列只有名字，无任何属性；接收即删除（不需要 ack）。消费完清空后会自动回收磁盘，也可手动点「回收」</span>
+    </div>
+    <div class="panel">
+      <div class="tbl-wrap">
+        <table class="tbl" id="queueTable">
+          <thead>
+            <tr>
+              <th>队列名</th>
+              <th>待消费</th><th>总入队</th><th>总消费</th>
+              <th>操作</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="section-title">API Key 管理</div>
+    <div class="toolbar">
+      <input id="keyName" class="inline-input" placeholder="备注（可选）" style="width:160px">
+      <select id="keyExp" class="inline-input" style="width:120px">
+        <option value="0">永不过期</option>
+        <option value="1">1 天</option>
+        <option value="7">7 天</option>
+        <option value="30">30 天</option>
+        <option value="90">90 天</option>
+      </select>
+      <button class="btn primary" id="btnCreateKey">+ 创建 Key</button>
+      <span class="toolbar-tip">调用消息 API 时携带请求头 X-Api-Key</span>
+    </div>
+    <div class="panel">
+      <div class="tbl-wrap">
+        <table class="tbl" id="keyTable">
+          <thead>
+            <tr><th>Key</th><th>备注</th><th>创建时间</th><th>过期时间</th><th>状态</th><th>操作</th></tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
+    </div>
+  </section>
+
+  <!-- API 文档 -->
+  <section id="tab-api" class="tab-page hidden">
+    <div class="panel">
+      <h2>认证方式（API Key）</h2>
+      <pre class="code">在控制台"API Key 管理"中创建密钥（可设置过期时间），
+调用消息 API 时携带请求头：
+
+  X-Api-Key: &lt;你的 key&gt;
+
+也支持 query 方式：?key=&lt;你的 key&gt;</pre>
+    </div>
+    <div class="panel">
+      <h2>语义说明</h2>
+      <pre class="code">队列只有名字，没有延迟/可见性超时/TTL 等属性。
+接收即删除：GET 取到的消息会被立即物理删除，不会再投递（不需要 ack）。
+无消息时可长轮询：wait=N 最多挂起 N 秒等新消息。</pre>
+    </div>
+    <div class="panel">
+      <h2>消息 API</h2>
+      <table class="tbl api-tbl">
+        <thead><tr><th>方法</th><th>路径</th><th>说明</th></tr></thead>
+        <tbody>
+          <tr><td>POST</td><td>/api/queues</td><td>创建队列 {"queueName":"q1"}</td></tr>
+          <tr><td>GET</td><td>/api/queues</td><td>队列列表（含累计计数）</td></tr>
+          <tr><td>GET</td><td>/api/queues/{name}</td><td>队列详情</td></tr>
+          <tr><td>DELETE</td><td>/api/queues/{name}</td><td>删除队列</td></tr>
+          <tr><td>POST</td><td>/api/queues/{name}/messages</td><td>发送消息 {"body":"..."}</td></tr>
+          <tr><td>POST</td><td>/api/queues/{name}/messages/batch</td><td>批量发送 {"bodies":["..",".."]}（≤16条）</td></tr>
+          <tr><td>GET</td><td>/api/queues/{name}/messages?num=1&amp;wait=5</td><td>接收消息并删除（wait=长轮询秒数，num=批量数）</td></tr>
+          <tr><td>GET</td><td>/api/queues/{name}/messages/peek</td><td>查看队首消息（不消费）</td></tr>
+          <tr><td>POST</td><td>/api/queues/{name}/peek-batch</td><td>分页查看消息（不消费）{"offset":0,"limit":10}</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div class="panel">
+      <h2>调用示例（curl）</h2>
+      <pre class="code" id="apiExample">加载中...</pre>
+    </div>
+  </section>
+</div>
+
+<!-- 创建队列 弹窗 -->
+<div id="dlgQueue" class="modal hidden">
+  <div class="modal-box">
+    <h2 id="dlgQueueTitle">创建队列</h2>
+    <label>队列名<input id="qName" placeholder="中文/字母/数字/_/-，1-64 个字符"></label>
+    <div class="modal-foot">
+      <button class="btn" data-close>取消</button>
+      <button class="btn primary" id="qSave">保存</button>
+    </div>
+  </div>
+</div>
+
+<!-- 消息查看 弹窗 -->
+<div id="dlgMsgs" class="modal hidden">
+  <div class="modal-box wide">
+    <h2 id="dlgMsgsTitle">队列消息</h2>
+    <div class="toolbar">
+      <button class="btn" id="btnRefreshMsgs">刷新</button>
+      <button class="btn" id="btnSendTest">发 1 条测试消息</button>
+      <button class="btn primary" id="btnBenchThis">压测此队列</button>
+      <span class="toolbar-tip">每页
+        <select id="pageSize" class="inline-input" style="width:70px;padding:4px 6px">
+          <option value="10">10</option>
+          <option value="20" selected>20</option>
+          <option value="50">50</option>
+          <option value="100">100</option>
+        </select> 条
+      </span>
+    </div>
+    <div class="msg-list" id="msgList"></div>
+    <div class="pager">
+      <button class="btn sm" id="btnFirstPage">首页</button>
+      <button class="btn sm" id="btnPrevPage">上一页</button>
+      <span id="pageInfo" class="page-info">-</span>
+      <button class="btn sm" id="btnNextPage">下一页</button>
+      <span class="toolbar-tip" id="msgTotal"></span>
+    </div>
+    <div class="modal-foot"><button class="btn" data-close>关闭</button></div>
+  </div>
+</div>
+
+<!-- 压测 弹窗 -->
+<div id="dlgBench" class="modal hidden">
+  <div class="modal-box">
+    <h2>性能压测（引擎级，每条消息强制落盘）</h2>
+    <label>队列名<input id="bQueue" value="bench"></label>
+    <div class="grid2">
+      <label>消息条数<input id="bCount" type="number" value="10000"></label>
+      <label>并发数<input id="bConc" type="number" value="16"></label>
+    </div>
+    <div class="toolbar">
+      <button class="btn primary" id="btnBenchRun">开始压测</button>
+      <span id="benchRunning" class="hidden">压测中，请稍候...</span>
+    </div>
+    <pre class="code hidden" id="benchOut"></pre>
+    <div class="modal-foot"><button class="btn" data-close>关闭</button></div>
+  </div>
+</div>
+
+<div id="toast" class="toast hidden"></div>
+
+<script src="/web/app.js"></script>
+</body>
+</html>
