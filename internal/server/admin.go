@@ -95,13 +95,18 @@ func (s *Server) handleCreateKey(w http.ResponseWriter, r *http.Request) {
 }
 
 // handleDeleteKey 删除 key
+// 注意：本路由的通配符是 {key}，不能用 pathQueueName（它取的是 {name}）
 func (s *Server) handleDeleteKey(w http.ResponseWriter, r *http.Request) {
-	key := pathQueueName(r)
+	key := r.PathValue("key")
+	if key == "" {
+		writeErr(w, 400, "缺少 key")
+		return
+	}
 	if err := s.Eng.DeleteKey(key); err != nil {
 		writeErr(w, 404, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"deleted": true})
+	writeJSON(w, 200, map[string]any{"deleted": true, "key": key})
 }
 
 // ---------- 每日统计 ----------

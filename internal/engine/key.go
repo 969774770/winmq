@@ -49,6 +49,14 @@ func (c *keyCache) del(key string) {
 	c.mu.Unlock()
 }
 
+// has 是否存在（不校验过期：过期 key 也应能删除）
+func (c *keyCache) has(key string) bool {
+	c.mu.RLock()
+	_, ok := c.keys[key]
+	c.mu.RUnlock()
+	return ok
+}
+
 // valid 校验存在且未过期
 func (c *keyCache) valid(key string, now int64) bool {
 	c.mu.RLock()
@@ -102,6 +110,9 @@ func (e *Engine) CreateKey(name string, expiresAt int64) (*APIKey, error) {
 
 // DeleteKey 删除密钥
 func (e *Engine) DeleteKey(key string) error {
+	if !e.keyCache.has(key) {
+		return ErrKeyNotFound // 避免把"删了个不存在的 key"当成成功
+	}
 	if err := e.st.DeleteAPIKey(key); err != nil {
 		return err
 	}

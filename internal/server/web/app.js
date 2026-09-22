@@ -171,10 +171,11 @@ function refreshKeys() {
       tr.querySelector(".key-val").textContent = k.key;
       tr.querySelector('[data-act="del"]').onclick = function () {
         if (!confirm("确定删除该 Key？使用它的客户端将立即失效。")) return;
-        adminFetch("DELETE", "/admin/api/keys/" + encodeURIComponent(k.key)).then(function () {
+        adminFetch("DELETE", "/admin/api/keys/" + encodeURIComponent(k.key)).then(function (d) {
+          if (d && d.error) { showToast("删除失败：" + d.error); return; }
           showToast("已删除");
           refreshKeys();
-        });
+        }).catch(function (e) { showToast("删除失败：" + e.message); });
       };
       tb.appendChild(tr);
     });
