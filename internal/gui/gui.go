@@ -31,18 +31,23 @@ type App struct {
 	mgr     *app.ServiceManager
 	logBuf  *LogBuffer
 
-	te         *walk.TextEdit // 信息区（只读文本框）
-	edPort     *walk.LineEdit
-	cbAuto     *walk.CheckBox
-	btnStart   *walk.PushButton
-	btnStop    *walk.PushButton
-	btnRestart *walk.PushButton
-	ni         *walk.NotifyIcon
+	te            *walk.TextEdit // 信息区（只读文本框）
+	edPort        *walk.LineEdit
+	cbAuto        *walk.CheckBox
+	btnStart      *walk.PushButton
+	btnStop       *walk.PushButton
+	btnRestart    *walk.PushButton
+	btnSvcInstall *walk.PushButton
+	btnSvcUninst  *walk.PushButton
+	ni            *walk.NotifyIcon
 
-	svcRunning bool // Windows 服务正在运行（此时本窗口不启动本地实例）
-	autoInited bool
-	lastText   string
-	logMu      sync.Mutex
+	svcRunning   bool   // Windows 服务正在运行（此时本窗口不启动本地实例）
+	svcInstalled bool   // 服务已安装
+	svcState     string // 服务状态文本
+	svcTick      int
+	autoInited   bool
+	lastText     string
+	logMu        sync.Mutex
 }
 
 // Run 启动主窗口（阻塞）；返回后进程退出
@@ -59,7 +64,7 @@ func Run(cfg *config.Config, cfgPath string, logBuf *LogBuffer) error {
 func (a *App) run() error {
 	// 若已安装的 Windows 服务正在运行，本窗口不再启动本地实例
 	// （两者会争用同一份数据目录与同一个端口）
-	a.svcRunning = winsvc.IsRunning()
+	a.refreshServiceState()
 	if a.svcRunning {
 		logf("检测到 winMQ 服务正在运行，本窗口仅用于查看状态")
 	} else {
@@ -116,6 +121,14 @@ func (a *App) setup() error {
 					Label{Text: "端口:"},
 					LineEdit{AssignTo: &a.edPort, Text: port, CueBanner: "6166", MaxSize: Size{Width: 64}},
 					CheckBox{AssignTo: &a.cbAuto, Text: "登录后自启", OnClicked: a.onAutoStart},
+				},
+			},
+			Composite{
+				Layout: HBox{MarginsZero: true, Spacing: 6},
+				Children: []Widget{
+					PushButton{AssignTo: &a.btnSvcInstall, Text: "安装服务", MinSize: Size{Width: 72}, OnClicked: func() { a.svcAction(true) }},
+					PushButton{AssignTo: &a.btnSvcUninst, Text: "卸载服务", MinSize: Size{Width: 72}, OnClicked: func() { a.svcAction(false) }},
+					Label{Text: "开机自启·无需登录"},
 				},
 			},
 			Composite{
@@ -202,6 +215,56 @@ func (a *App) onAutoStart() {
 	}
 }
 
+// refreshServiceState 查询 Windows 服务状态（用于信息区展示与按钮联动）
+func (a *App) refreshServiceState() {
+	a.svcRunning, a.svcState = winsvc.RunningAndText()
+	a.svcInstalled = a.svcState != "未安装"
+}
+
+// svcAction 一键安装 / 卸载 Windows 服务。
+// 安装需要管理员权限，会以 UAC 提权方式重新启动本程序来执行；
+// 且服务与本窗口不能同时占用同一份数据目录和端口，故安装前先停掉本窗口的实例。
+func (a *App) svcAction(install bool) {
+	port := a.mgr.CurrentPort()
+	var msg string
+	if install {
+		msg = "把 winMQ 安装为 Windows 服务并立即启动：\n\n" +
+			"· 开机自动启动，无需任何用户登录\n" +
+			"· 进程异常退出后由系统自动重启\n" +
+			"· 无界面运行，管理页 http://127.0.0.1:" + port + " 照常可用\n\n" +
+			"服务与本窗口不能同时占用同一份数据目录和同一个端口，\n" +
+			"因此会先停止本窗口当前的实例，随后请在 UAC 窗口中确认提权。\n\n是否继续？"
+	} else {
+		msg = "停止并卸载 winMQ 服务？\n\n" +
+			"· 正在运行的服务实例会被中断（管理页将暂时无法访问）\n" +
+			"· 之后可点「启动」在本窗口重新运行\n\n是否继续？"
+	}
+	if walk.MsgBox(a.MainWindow, "winMQ 系统服务", msg,
+		walk.MsgBoxYesNo|walk.MsgBoxIconQuestion) != walk.DlgCmdYes {
+		return
+	}
+
+	if install && a.mgr.Running() {
+		// 先释放端口与数据目录，否则服务起不来
+		if err := a.mgr.Stop(); err != nil {
+			logf("停止本窗口实例失败: %v", err)
+		}
+	}
+
+	arg := "-install"
+	what := "安装服务"
+	if !install {
+		arg = "-uninstall"
+		what = "卸载服务"
+	}
+	if err := winsvc.RunElevated(arg); err != nil {
+		walk.MsgBox(a.MainWindow, "winMQ 系统服务", "提权失败："+err.Error(),
+			walk.MsgBoxOK|walk.MsgBoxIconError)
+		return
+	}
+	logf("已请求系统%s，请在 UAC 窗口中确认", what)
+}
+
 // action 启动/停止/重启
 func (a *App) action(what string) {
 	go func() {
@@ -260,8 +323,12 @@ func (a *App) buildStatusText() string {
 		w("运行时长", "-")
 		w("启动耗时", "-")
 	}
-	if a.svcRunning {
-		w("系统服务", "运行中（本窗口未启动本地实例）")
+	if a.svcState != "" {
+		txt := a.svcState
+		if a.svcRunning {
+			txt += "（本窗口未启动本地实例）"
+		}
+		w("系统服务", txt)
 	}
 
 	b.WriteString(line + "\r\n [消息]\r\n")
@@ -327,6 +394,14 @@ func (a *App) refresh() {
 	a.btnStart.SetEnabled(!snap.Running && !snap.Starting && !a.svcRunning)
 	a.btnStop.SetEnabled(snap.Running)
 	a.btnRestart.SetEnabled(snap.Running)
+
+	// 服务状态每 3 秒查询一次（用于展示与按钮联动）
+	a.svcTick++
+	if a.svcTick%3 == 0 {
+		a.refreshServiceState()
+	}
+	a.btnSvcInstall.SetEnabled(!a.svcInstalled)
+	a.btnSvcUninst.SetEnabled(a.svcInstalled)
 
 	// 自启勾选状态（仅首次初始化，避免循环触发）
 	if !a.autoInited {

@@ -6,7 +6,7 @@ package main
 //
 //	winmq.exe                 图形界面（托盘 + 控制窗口，当前用户登录时使用）
 //	winmq.exe -mode=headless  无界面运行（后台/自测）
-//	winmq.exe -install        安装为 Windows 服务（开机自启、无需用户登录，需管理员）
+//	winmq.exe -install        安装为 Windows 服务并立即启动（开机自启、无需登录，需管理员）
 //	winmq.exe -uninstall      停止并卸载服务（需管理员）
 //	winmq.exe -start / -stop / -status   服务启停与状态
 //	winmq.exe -mode=bench     HTTP 全链路压测（命令行）
@@ -25,6 +25,7 @@ import (
 	"os/signal"
 	"path/filepath"
 	"syscall"
+	"time"
 
 	"golang.org/x/sys/windows"
 
@@ -43,19 +44,31 @@ func main() {
 	count := flag.Int("count", 10000, "压测消息条数")
 	conc := flag.Int("concurrency", 16, "压测并发数")
 
-	install := flag.Bool("install", false, "安装为 Windows 服务（开机自启、无需登录，需管理员权限）")
+	install := flag.Bool("install", false, "安装为 Windows 服务并立即启动（开机自启、无需登录，需管理员权限）")
 	uninstall := flag.Bool("uninstall", false, "停止并卸载 Windows 服务（需管理员权限）")
 	svcStart := flag.Bool("start", false, "启动已安装的 Windows 服务")
 	svcStop := flag.Bool("stop", false, "停止已安装的 Windows 服务")
 	svcStatus := flag.Bool("status", false, "查看 Windows 服务状态")
 	flag.Parse()
 
-	// 服务管理命令：本程序是 GUI 子系统（无控制台），先接管父控制台才能看到输出
+	// 服务管理命令：本程序是 GUI 子系统（无控制台）
+	//   · 从 cmd/PowerShell 调用  → 接管父控制台，结果打到控制台
+	//   · 从界面上「一键安装服务」提权调用 → 没有控制台，改用消息框反馈
 	if *install || *uninstall || *svcStart || *svcStop || *svcStatus {
-		attachConsole()
-		if err := runServiceCmd(*install, *uninstall, *svcStart, *svcStop, *svcStatus); err != nil {
-			fmt.Println("失败:", err)
+		hasConsole := attachConsole()
+		text, err := runServiceCmd(*install, *uninstall, *svcStart, *svcStop, *svcStatus)
+		if err != nil {
+			if hasConsole {
+				fmt.Println("失败:", err)
+				os.Exit(1)
+			}
+			gui.MessageBox("winMQ 系统服务", "操作失败：\n\n"+err.Error(), true)
 			os.Exit(1)
+		}
+		if hasConsole {
+			fmt.Println(text)
+		} else {
+			gui.MessageBox("winMQ 系统服务", text, false)
 		}
 		return
 	}
@@ -103,33 +116,49 @@ func main() {
 	}
 }
 
-// runServiceCmd 执行服务管理命令
-func runServiceCmd(install, uninstall, start, stop, status bool) error {
+// runServiceCmd 执行服务管理命令，返回给用户看的文本
+func runServiceCmd(install, uninstall, start, stop, status bool) (string, error) {
 	switch {
 	case install:
 		if err := winsvc.Install(); err != nil {
-			return err
+			return "", err
 		}
-		fmt.Printf("服务 %s 已安装（自动启动，开机无需登录即运行）。\n现在启动它：winmq.exe -start\n", winsvc.Name)
+		if running, _ := winsvc.RunningAndText(); !running {
+			if err := winsvc.StartService(); err != nil {
+				return fmt.Sprintf("服务 %s 已安装（已设为开机自动启动），但立即启动失败。\n"+
+					"可稍后手动执行：winmq.exe -start\n\n%v", winsvc.Name, err), nil
+			}
+			// 等服务真正进入"运行中"再报告状态（最多等 3 秒）
+			for i := 0; i < 15; i++ {
+				if running, _ := winsvc.RunningAndText(); running {
+					break
+				}
+				time.Sleep(200 * time.Millisecond)
+			}
+		}
+		return fmt.Sprintf("服务 %s 已安装并启动。\n\n"+
+			"· 开机自动启动，无需任何用户登录\n"+
+			"· 当前状态：%s\n"+
+			"· 管理页端口见 config.json 的 httpAddr", winsvc.Name, winsvc.StateText()), nil
 	case uninstall:
 		if err := winsvc.Uninstall(); err != nil {
-			return err
+			return "", err
 		}
-		fmt.Printf("服务 %s 已卸载\n", winsvc.Name)
+		return fmt.Sprintf("服务 %s 已卸载。\n\n如需在本机图形界面继续使用，点界面上的「启动」即可。", winsvc.Name), nil
 	case start:
 		if err := winsvc.StartService(); err != nil {
-			return err
+			return "", err
 		}
-		fmt.Printf("服务 %s 已启动\n", winsvc.Name)
+		return fmt.Sprintf("服务 %s 已启动，当前状态：%s", winsvc.Name, winsvc.StateText()), nil
 	case stop:
 		if err := winsvc.StopService(); err != nil {
-			return err
+			return "", err
 		}
-		fmt.Printf("服务 %s 已停止\n", winsvc.Name)
+		return fmt.Sprintf("服务 %s 已停止", winsvc.Name), nil
 	case status:
-		fmt.Printf("服务 %s: %s\n", winsvc.Name, winsvc.StateText())
+		return fmt.Sprintf("服务 %s：%s", winsvc.Name, winsvc.StateText()), nil
 	}
-	return nil
+	return "", nil
 }
 
 // runService 以 Windows 服务方式运行（无界面，session 0）
@@ -176,21 +205,24 @@ func openLogFile(cfg *config.Config) *os.File {
 	return f
 }
 
-// attachConsole 让 GUI 子系统程序被 cmd/PowerShell 调用时也能输出到父控制台；
-// 无父控制台时静默失败（例如被服务控制管理器启动时）。
-func attachConsole() {
-	// stdout 已被调用方重定向到管道/文件时不要抢
+// attachConsole 让 GUI 子系统程序被 cmd/PowerShell 调用时也能输出到父控制台。
+// 返回是否有可用的控制台输出；无父控制台时返回 false（此时改用消息框反馈结果）。
+func attachConsole() bool {
+	// stdout 已被调用方重定向到管道/文件时直接用
 	if _, err := os.Stdout.Stat(); err == nil {
-		return
+		return true
 	}
 	const attachParentProcess = ^uintptr(0) // (DWORD)-1
 	r, _, _ := procAttachConsole.Call(attachParentProcess)
 	if r == 0 {
-		return
+		return false
 	}
-	if f, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0); err == nil {
-		os.Stdout, os.Stderr = f, f
+	f, err := os.OpenFile("CONOUT$", os.O_WRONLY, 0)
+	if err != nil {
+		return false
 	}
+	os.Stdout, os.Stderr = f, f
+	return true
 }
 
 var procAttachConsole = windows.NewLazySystemDLL("kernel32.dll").NewProc("AttachConsole")

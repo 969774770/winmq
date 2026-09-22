@@ -7,18 +7,23 @@ package winsvc
 //
 // 常用命令（需管理员权限）：
 //
-//	winmq.exe -install      安装为服务（自动启动 + 崩溃自动重启）
+//	winmq.exe -install      安装为服务**并立即启动**（自动启动 + 崩溃自动重启）
 //	winmq.exe -uninstall    停止并卸载服务
 //	winmq.exe -start        启动服务
 //	winmq.exe -stop         停止服务
 //	winmq.exe -status       查看服务状态
 
 import (
+	"errors"
 	"fmt"
 	"log"
 	"os"
+	"strings"
+	"syscall"
 	"time"
+	"unsafe"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -206,32 +211,69 @@ func State() (st svc.State, installed bool) {
 	return status.State, true
 }
 
-// IsRunning 服务是否已安装且正在运行（供 GUI 判断，避免同时占用数据目录与端口）
-func IsRunning() bool {
+// RunningAndText 服务是否正在运行 + 状态文本（未安装返回 false,"未安装"）。
+// 供界面每秒展示与按钮联动。
+func RunningAndText() (bool, string) {
 	st, ok := State()
-	return ok && st == svc.Running
+	if !ok {
+		return false, "未安装"
+	}
+	switch st {
+	case svc.Stopped:
+		return false, "已停止"
+	case svc.StartPending:
+		return false, "启动中"
+	case svc.StopPending:
+		return false, "停止中"
+	case svc.Running:
+		return true, "运行中"
+	case svc.Paused:
+		return false, "已暂停"
+	}
+	return false, fmt.Sprintf("状态码 %d", st)
 }
 
 // StateText 状态中文描述（未安装时返回"未安装"）
 func StateText() string {
-	st, ok := State()
-	if !ok {
-		return "未安装"
-	}
-	switch st {
-	case svc.Stopped:
-		return "已停止"
-	case svc.StartPending:
-		return "启动中"
-	case svc.StopPending:
-		return "停止中"
-	case svc.Running:
-		return "运行中"
-	case svc.Paused:
-		return "已暂停"
-	}
-	return fmt.Sprintf("状态码 %d", st)
+	_, text := RunningAndText()
+	return text
 }
+
+// RunElevated 以管理员身份重新启动本程序（触发 UAC 提权），
+// 供图形界面里"一键安装/卸载服务"使用。不等待子进程结束。
+func RunElevated(args ...string) error {
+	exe, err := os.Executable()
+	if err != nil {
+		return err
+	}
+	verb, _ := windows.UTF16PtrFromString("runas")
+	file, _ := windows.UTF16PtrFromString(exe)
+	params, _ := windows.UTF16PtrFromString(strings.Join(args, " "))
+
+	r, _, callErr := procShellExecute.Call(0,
+		uintptr(unsafe.Pointer(verb)),
+		uintptr(unsafe.Pointer(file)),
+		uintptr(unsafe.Pointer(params)),
+		0, // 工作目录（继承）
+		swShowNormal)
+	if r <= 32 { // ShellExecute 返回值 <=32 表示失败
+		if r == 5 {
+			return errors.New("权限不足")
+		}
+		if r == 1223 {
+			return errors.New("已取消 UAC 提权")
+		}
+		if callErr != nil && callErr != syscall.Errno(0) {
+			return callErr
+		}
+		return errors.New("无法启动提权进程")
+	}
+	return nil
+}
+
+const swShowNormal = 1
+
+var procShellExecute = windows.NewLazySystemDLL("shell32.dll").NewProc("ShellExecuteW")
 
 func open() (*mgr.Mgr, *mgr.Service, error) {
 	m, err := mgr.Connect()
